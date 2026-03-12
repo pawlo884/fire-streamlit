@@ -111,10 +111,10 @@ def calculate_net_appointment(monthly_brutto):
 st.sidebar.header("⚙️ Parametry Wejściowe")
 
 invoice_amount_gross = st.sidebar.number_input(
-    "Faktura Miesięczna Spółki (Brutto PLN)", min_value=0, value=36900, step=1000
+    "Faktura Miesięczna Spółki (Brutto PLN)", min_value=0, value=27000, step=1000
 )
 invoice_amount = st.sidebar.number_input(
-    "Faktura Miesięczna Spółki (Netto PLN)", min_value=0, value=30000, step=1000
+    "Faktura Miesięczna Spółki (Netto PLN)", min_value=0, value=20000, step=1000
 )
 
 st.sidebar.subheader("🧾 Podsumowanie faktury")
