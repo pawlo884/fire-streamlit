@@ -154,6 +154,12 @@ living_expenses = st.sidebar.number_input("Koszty Życia (Rodzina)", value=8000)
 mama_support = st.sidebar.number_input("Inne", value=0000)
 benefit_800plus = st.sidebar.number_input("Świadczenia (np. 800+)", value=1600)
 
+st.sidebar.subheader("🏦 IKZE (2 osoby / prognoza)")
+ikze_enabled = st.sidebar.checkbox("Uwzględniaj IKZE w budżecie", value=True)
+ikze_monthly_per_person = st.sidebar.number_input(
+    "Wpłata IKZE (PLN/mies. na osobę)", min_value=0, value=942, step=10
+)
+
 # Metale Szlachetne
 if st.sidebar.button("Aktualizuj ceny rynkowe"):
     st.cache_data.clear()
@@ -169,13 +175,33 @@ st.sidebar.write(f"Kurs USD/PLN: **{exchange_rate:.4f}**")
 gold_price_oz = st.sidebar.number_input(
     "Cena uncji złota (PLN) do wyliczeń", value=gold_price_live)
 
+st.sidebar.subheader("🟡 Złoto (założenia)")
+corp_buy_gold_enabled = st.sidebar.checkbox(
+    "Kupuj złoto z nadwyżki spółki", value=False
+)
+priv_buy_gold_enabled = st.sidebar.checkbox(
+    "Kupuj złoto z nadwyżki prywatnej", value=True
+)
+gold_oz_per_year = st.sidebar.number_input(
+    "Zakup złota (oz/rok)", min_value=0.0, value=2.0, step=0.25
+)
+
+st.sidebar.subheader("🛟 Poduszka finansowa")
+emergency_fund_target = st.sidebar.number_input(
+    "Cel poduszki (PLN)", min_value=0, value=50000, step=5000
+)
+emergency_fund_share_pct = st.sidebar.slider(
+    "Ile % nadwyżki idzie na poduszkę", 0, 100, 40
+)
+
 # --- OBLICZENIA ---
 
 # 1. Przeliczenie Powołania (Prywatnie)
 payout_net_per_person, health_per_person, tax_per_person = calculate_net_appointment(
     monthly_appointment_brutto)
 total_private_income = (payout_net_per_person * num_people) + benefit_800plus
-private_surplus = total_private_income - living_expenses -  mama_support
+ikze_monthly_total = (ikze_monthly_per_person * num_people) if ikze_enabled else 0
+private_surplus = total_private_income - living_expenses - mama_support - ikze_monthly_total
 
 # 2. Przeliczenie Spółki (Wynagrodzenie z powołania to koszt uzyskania przychodu - KUP)
 total_appointment_cost_corp = monthly_appointment_brutto * num_people
@@ -199,8 +225,8 @@ col4.metric("Zdrowotna 9% (os.)",
 
 st.divider()
 
-tab_analysis, tab_gold, tab_loan = st.tabs(
-    ["📊 Analiza Finansowa", "✨ Portfel Złota", "🏠 Spłata Domu"])
+tab_analysis, tab_ikze, tab_gold, tab_loan = st.tabs(
+    ["📊 Analiza Finansowa", "🏦 IKZE", "✨ Portfel Złota", "🏠 Spłata Domu"])
 
 with tab_analysis:
     c1, c2 = st.columns(2)
@@ -221,6 +247,8 @@ with tab_analysis:
             f"Wpływy Netto (Rodzina): **{total_private_income:,.0f} PLN**")
         st.write(
             f"Wydatki Stałe: **{living_expenses + mama_support:,.0f} PLN**")
+        if ikze_enabled:
+            st.write(f"IKZE (łącznie): **{ikze_monthly_total:,.0f} PLN**")
         st.success(f"Dostępna Nadwyżka: **{private_surplus:,.0f} PLN**")
 
     # Timeline akumulacji miesiąc po miesiącu (start: kwiecień 2026)
@@ -232,18 +260,77 @@ with tab_analysis:
     monthly_corp = max(company_net_surplus, 0)
     monthly_priv = max(private_surplus, 0)
 
-    # Wartości estymowane (narastająco)
+    # Wartości estymowane (narastająco) z priorytetem budowy poduszki (prywatnie)
     corp_cum = []
     priv_cum = []
     total_cum = []
+    emergency_cum = []
+    investable_cum = []
+    corp_cash_cum = []
+    corp_gold_oz_cum = []
+    corp_gold_value_cum = []
+    priv_cash_cum = []
+    priv_gold_oz_cum = []
+    priv_gold_value_cum = []
     current_corp = 0.0
     current_priv = 0.0
+    current_emergency = 0.0
+    current_investable = 0.0
+    current_corp_cash = 0.0
+    current_corp_gold_oz = 0.0
+    current_priv_cash = 0.0
+    current_priv_gold_oz = 0.0
     for _ in range(months_sim):
         current_corp += monthly_corp
         current_priv += monthly_priv
         corp_cum.append(current_corp)
         priv_cum.append(current_priv)
         total_cum.append(current_corp + current_priv)
+
+        available_priv = monthly_priv
+        if (
+            emergency_fund_target > 0
+            and current_emergency < emergency_fund_target
+            and available_priv > 0
+            and emergency_fund_share_pct > 0
+        ):
+            to_emergency = min(
+                available_priv * (emergency_fund_share_pct / 100.0),
+                emergency_fund_target - current_emergency,
+            )
+        else:
+            to_emergency = 0.0
+        current_emergency += to_emergency
+        investable_this_month = max(0.0, available_priv - to_emergency)
+
+        # Nadwyżka prywatna: domyślnie zostaje jako gotówka do inwestycji; opcjonalnie zamieniana na złoto
+        current_priv_cash += investable_this_month
+        if priv_buy_gold_enabled and gold_oz_per_year > 0 and gold_price_oz > 0:
+            planned_oz_month = gold_oz_per_year / 12.0
+            planned_cost = planned_oz_month * gold_price_oz
+            if current_priv_cash >= planned_cost:
+                current_priv_cash -= planned_cost
+                current_priv_gold_oz += planned_oz_month
+
+        # "Do inwestycji" = prywatna gotówka + prywatne złoto (w PLN), bez spółki
+        current_investable = current_priv_cash + (current_priv_gold_oz * gold_price_oz)
+        emergency_cum.append(current_emergency)
+        investable_cum.append(current_investable)
+        priv_cash_cum.append(current_priv_cash)
+        priv_gold_oz_cum.append(current_priv_gold_oz)
+        priv_gold_value_cum.append(current_priv_gold_oz * gold_price_oz)
+
+        # Nadwyżka spółki: zostaje na koncie; opcjonalnie zamieniana na złoto inwestycyjne
+        current_corp_cash += monthly_corp
+        if corp_buy_gold_enabled and gold_oz_per_year > 0 and gold_price_oz > 0:
+            planned_oz_month = gold_oz_per_year / 12.0
+            planned_cost = planned_oz_month * gold_price_oz
+            if current_corp_cash >= planned_cost:
+                current_corp_cash -= planned_cost
+                current_corp_gold_oz += planned_oz_month
+        corp_cash_cum.append(current_corp_cash)
+        corp_gold_oz_cum.append(current_corp_gold_oz)
+        corp_gold_value_cum.append(current_corp_gold_oz * gold_price_oz)
 
     # Wartości aktualne z mini-bazy JSON (narastająco z wpisanych miesięcznych kwot)
     actuals = load_actuals()
@@ -268,6 +355,14 @@ with tab_analysis:
             "Spółka (est.)": corp_cum,
             "Prywatnie (est.)": priv_cum,
             "Łącznie (est.)": total_cum,
+            "Poduszka (est.)": emergency_cum,
+            "Do inwestycji (prywatnie est.)": investable_cum,
+            "Prywatnie: gotówka (est.)": priv_cash_cum,
+            "Prywatnie: złoto (oz est.)": priv_gold_oz_cum,
+            "Prywatnie: złoto (PLN est.)": priv_gold_value_cum,
+            "Spółka: konto (est.)": corp_cash_cum,
+            "Spółka: złoto (oz est.)": corp_gold_oz_cum,
+            "Spółka: złoto (PLN est.)": corp_gold_value_cum,
         }
     )
     if actuals:
@@ -298,10 +393,39 @@ with tab_analysis:
             st.success("Zapisano.")
             st.rerun()
 
+with tab_ikze:
+    st.subheader("🏦 IKZE")
+    if not ikze_enabled:
+        st.info("IKZE jest wyłączone w parametrach w sidebarze (nie jest odliczane od nadwyżki).")
+    else:
+        st.success("IKZE jest włączone i **odliczane od nadwyżki prywatnej**.")
+
+    m1, m2, m3 = st.columns(3)
+    with m1:
+        st.metric("Wpłata / osoba (mies.)", f"{ikze_monthly_per_person:,.0f} PLN")
+    with m2:
+        st.metric("Wpłata łącznie (mies.)", f"{ikze_monthly_total:,.0f} PLN")
+    with m3:
+        st.metric("Wpłata łącznie (rok)", f"{ikze_monthly_total * 12:,.0f} PLN")
+
+    months_ikze = st.slider("Horyzont IKZE (miesiące)", 1, 360, 120, key="months_ikze")
+    dates_ikze = pd.date_range(start="2026-04-01", periods=months_ikze, freq="MS")
+    keys_ikze = [d.strftime("%Y-%m") for d in dates_ikze]
+    monthly_ikze = ikze_monthly_total if ikze_enabled else 0
+
+    ikze_cum = []
+    acc = 0.0
+    for _ in range(months_ikze):
+        acc += monthly_ikze
+        ikze_cum.append(acc)
+
+    ikze_df = pd.DataFrame({"Data": keys_ikze, "IKZE (wpłaty narastająco)": ikze_cum}).set_index("Data")
+    st.line_chart(ikze_df, height=260)
+
 with tab_gold:
     st.subheader("🟡 Złoto jako Aktywo Rezerwowe")
     st.write(
-        f"Przy nadwyżce w spółce kupujesz rocznie: **{(company_net_surplus * 12 / gold_price_oz):.2f} uncji**.")
+        f"Założenie: kupujesz rocznie: **{gold_oz_per_year:.2f} uncji** (koszt ~**{gold_oz_per_year * gold_price_oz:,.0f} PLN/rok**).")
 
     growth_rate = st.slider(
         "Przewidywany roczny wzrost ceny złota (%)", 0, 15, 7)
@@ -310,7 +434,7 @@ with tab_gold:
 
     st.write(
         f"Prognozowana cena uncji za {future_years} lat: **{future_price:,.0f} PLN**")
-    total_oz = (company_net_surplus * 12 / gold_price_oz) * future_years
+    total_oz = gold_oz_per_year * future_years
     st.success(
         f"Twój skarbiec w 2038 r.: **{total_oz:.1f} uncji** o wartości **{total_oz * future_price:,.0f} PLN**.")
 
